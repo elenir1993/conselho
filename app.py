@@ -6,22 +6,29 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 import io
 import unicodedata
 
-# 1. FUNÇÃO CHAVE: Limpa nomes para evitar erros (Cruza os dados com precisão)
+# 1. FUNÇÃO CHAVE: Limpa nomes para evitar erros
 def normalizar_nome(nome):
     if pd.isna(nome): return ""
     nome = str(nome).strip().upper()
     nome = ''.join(c for c in unicodedata.normalize('NFD', nome) if unicodedata.category(c) != 'Mn')
     return nome
 
-# 2. LEITOR DA SED: Resolve o problema do Excel HTML exportado pelo governo
+# 2. LEITOR DA SED: Resolve o problema do Excel HTML e puxa a Turma
 def ler_mapao_robusto(arquivo):
     try:
         tabelas = pd.read_html(arquivo)
         df_bruto = tabelas[0]
         
         linha_disciplinas, linha_nome = -1, -1
+        nome_turma = arquivo.name.replace('.xls', '').replace('.xlsx', '')[:31] # Nome padrão se falhar
         
+        # Caçador de Turma e Cabeçalhos
         for i, row in df_bruto.iterrows():
+            row_str_full = row.dropna().astype(str).tolist()
+            for cell in row_str_full:
+                if "Turma:" in cell:
+                    nome_turma = cell.replace("Turma:", "").strip()
+                    
             row_str = row.astype(str).str.lower()
             if 'aluno' in row_str.values: linha_disciplinas = i
             if 'nome' in row_str.values and ('sit' in row_str.values or 'situação' in row_str.values):
@@ -40,10 +47,11 @@ def ler_mapao_robusto(arquivo):
             row_nome = df_bruto.iloc[linha_nome].astype(str).str.lower()
             idx_nome, idx_sit, idx_num = -1, -1, -1
             
+            # Trava as colunas corretas para preservar o Número de Chamada (Nº) fiel ao mapão
             for col_idx, val in enumerate(row_nome):
                 if val == 'nome' and idx_nome == -1: idx_nome = col_idx
                 if val in ['sit', 'situação'] and idx_sit == -1: idx_sit = col_idx
-                if val in ['nº', 'numero', 'chamada'] and idx_num == -1: idx_num = col_idx
+                if val in ['nº', 'numero', 'chamada', 'n'] and idx_num == -1: idx_num = col_idx
                 
             if idx_num == -1 and idx_sit != -1: idx_num = idx_sit + 1
             
@@ -54,20 +62,30 @@ def ler_mapao_robusto(arquivo):
                 if len(nome) < 3: continue 
                 
                 sit = str(row[idx_sit]).strip() if idx_sit != -1 else ""
+                # Preserva o número de chamada exatamente como está (ex: "01")
                 num = str(row[idx_num]).strip() if idx_num != -1 else ""
+                if num == "nan" or num == "None": num = ""
                 
                 alunos.append({'Nº': num, 'Nome do Aluno': nome, 'Sit.': sit})
                 
-        return pd.DataFrame(alunos), disciplinas
+        return pd.DataFrame(alunos), disciplinas, nome_turma
     except Exception:
         # Fallback (para arquivos XLS/XLSX verdadeiros)
         df = pd.read_excel(arquivo, header=None)
+        nome_turma = arquivo.name.replace('.xls', '').replace('.xlsx', '')[:31]
+        
         linha_cabecalho = 0
         for i, linha in df.iterrows():
+            linha_str_full = linha.dropna().astype(str).tolist()
+            for cell in linha_str_full:
+                if "Turma:" in cell:
+                    nome_turma = cell.replace("Turma:", "").strip()
+                    
             linha_str = linha.astype(str).str.lower()
             if linha_str.str.contains('nome do aluno|nome|aluno', na=False).any():
                 linha_cabecalho = i
                 break
+                
         df = pd.read_excel(arquivo, skiprows=linha_cabecalho)
         df.columns = df.columns.astype(str).str.strip()
         
@@ -84,14 +102,18 @@ def ler_mapao_robusto(arquivo):
         if 'Sit.' not in df.columns: df['Sit.'] = ""
         if 'Nº' not in df.columns: df['Nº'] = ""
         
+        # Converte número para texto para não perder zero à esquerda
+        df['Nº'] = df['Nº'].astype(str).str.replace(r'\.0$', '', regex=True)
+        df.loc[df['Nº'] == 'nan', 'Nº'] = ""
+        
         disciplinas = [col for col in df.columns if col not in colunas_padrao and 'unnamed' not in col.lower()]
-        return df[colunas_padrao].dropna(subset=['Nome do Aluno']), disciplinas
+        return df[colunas_padrao].dropna(subset=['Nome do Aluno']), disciplinas, nome_turma
 
 # --- INÍCIO DO APP STREAMLIT ---
 st.set_page_config(page_title="Gerador de Conselho", layout="centered")
 
 st.title("📚 Sistema do Conselho de Classe")
-st.write("**E.E. Dr. Américo Brasiliense**")
+st.write("**ESCOLA ESTADUAL AMERICO BRASILIENSE DOUTOR**")
 
 turno = st.selectbox("Turno:", ["Manhã", "Tarde", "Noite", "Integral"])
 
@@ -99,12 +121,8 @@ st.subheader("Passo 1: Carregar Turmas (Mapões da SED)")
 mapoes_files = st.file_uploader("Suba os arquivos de Mapão aqui", type=["xlsx", "xls"], accept_multiple_files=True)
 
 if mapoes_files:
-    nomes_arquivos = [f.name for f in mapoes_files]
-    turmas_detectadas = [nome.replace('.xls', '').replace('.xlsx', '')[:31] for nome in nomes_arquivos]
-    
-    st.success(f"✅ {len(turmas_detectadas)} Turmas identificadas para o processamento:")
-    st.write(", ".join(turmas_detectadas))
-    
+    # Exibe no painel apenas a quantidade de arquivos para manter limpo
+    st.success(f"✅ {len(mapoes_files)} arquivo(s) carregado(s). O sistema vai ler a turma oficial de dentro de cada um.")
     st.divider()
     
     st.subheader("Passo 2: Configurar Prova Paulista")
@@ -123,7 +141,7 @@ if mapoes_files:
         pode_gerar = False
 
     if pode_gerar and st.button("Validar e Gerar Planilha Oficial", type="primary"):
-        with st.spinner('Cruzando dados com segurança e formatando notas...'):
+        with st.spinner('Lendo turmas da SED e cruzando notas de forma segura...'):
             try:
                 # TRATAR PROVA PAULISTA
                 df_prova_reduzido = pd.DataFrame(columns=['Nome_Chave', 'Prova Paulista'])
@@ -148,18 +166,14 @@ if mapoes_files:
                         df_prova_reduzido = df_prova_unificado[['Nome_Chave', coluna_nota]].rename(columns={coluna_nota: 'Prova Paulista'})
                         df_prova_reduzido = df_prova_reduzido.drop_duplicates(subset=['Nome_Chave'])
                         
-                        # --- FORMATAÇÃO DA NOTA (Inteira, com 1 casa decimal) ---
                         df_prova_reduzido['Prova Paulista'] = pd.to_numeric(df_prova_reduzido['Prova Paulista'], errors='coerce')
                         
-                        # Se o sistema der a nota como 0.80 (80%), converte para base 10 (8.0)
                         if df_prova_reduzido['Prova Paulista'].max() <= 1.0:
                             df_prova_reduzido['Prova Paulista'] = df_prova_reduzido['Prova Paulista'] * 10
                             
-                        # Trava em 1 casa decimal com vírgula (ex: 8.0 vira "8,0")
                         df_prova_reduzido['Prova Paulista'] = df_prova_reduzido['Prova Paulista'].apply(
                             lambda x: f"{x:.1f}".replace('.', ',') if pd.notnull(x) else ""
                         )
-                        # ---------------------------------------------------------
 
                 # INICIAR EXCEL OFICIAL
                 wb = Workbook()
@@ -167,11 +181,11 @@ if mapoes_files:
                 escola_nome = "ESCOLA ESTADUAL AMERICO BRASILIENSE DOUTOR"
 
                 for i, arq_mapao in enumerate(mapoes_files):
-                    nome_aba = turmas_detectadas[i]
-                    df_mapao, disciplinas = ler_mapao_robusto(arq_mapao)
+                    # AGORA EXTRAIMOS A TURMA REAL DE DENTRO DO MAPÃO
+                    df_mapao, disciplinas, nome_turma = ler_mapao_robusto(arq_mapao)
                     
                     if df_mapao is None or df_mapao.empty:
-                        st.error(f"Erro ao ler os dados da turma {nome_aba}. Verifique o arquivo.")
+                        st.error(f"Erro ao ler os dados do arquivo {arq_mapao.name}. Verifique o formato.")
                         continue
                         
                     df_mapao['Nome_Chave'] = df_mapao['Nome do Aluno'].apply(normalizar_nome)
@@ -192,8 +206,13 @@ if mapoes_files:
                     colunas_finais = ['Nº', 'Nome do Aluno', 'Sit.', 'Prova Paulista'] + disciplinas + ['Observações']
                     df_final = df_final[colunas_finais]
 
+                    # Aba do Excel limitada a 31 caracteres, mas usando o nome real da turma
+                    nome_aba = nome_turma[:31] 
+                    
                     ws = wb.create_sheet(title=nome_aba)
-                    titulo_linha1 = f"{escola_nome}  ·  {nome_aba} – {turno}  ·  Conselho de Classe — 1º Bimestre / 2026"
+                    
+                    # Cabeçalho usando o nome EXATO da turma que estava no Mapão
+                    titulo_linha1 = f"{escola_nome}  ·  {nome_turma} – {turno}  ·  Conselho de Classe — 1º Bimestre / 2026"
                     ws.append([titulo_linha1])
                     ws.append(["Tipo de Ensino: Ensino Fundamental de 9 Anos / Ensino Médio / EJA"])
                     
@@ -228,7 +247,7 @@ if mapoes_files:
                 wb.save(output)
                 output.seek(0)
                 
-                st.success("Tudo validado! O cruzamento das notas foi feito com segurança e a formatação foi aplicada.")
+                st.success("Sucesso! As turmas foram nomeadas corretamente com os números de chamada idênticos à SED.")
                 st.download_button(
                     label="⬇️ Baixar Planilha Oficial do Conselho",
                     data=output,
@@ -236,4 +255,4 @@ if mapoes_files:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             except Exception as e:
-                st.error(f"Ocorreu um problema ao gerar, por favor verifique as planilhas: {e}")
+                st.error(f"Ocorreu um problema ao gerar: {e}")

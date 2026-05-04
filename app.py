@@ -60,7 +60,7 @@ def ler_mapao_robusto(arquivo):
                 
         return pd.DataFrame(alunos), disciplinas
     except Exception:
-        # Fallback (para arquivos XLS/XLSX verdadeiros) se a SED mudar o formato
+        # Fallback (para arquivos XLS/XLSX verdadeiros)
         df = pd.read_excel(arquivo, header=None)
         linha_cabecalho = 0
         for i, linha in df.iterrows():
@@ -99,7 +99,6 @@ st.subheader("Passo 1: Carregar Turmas (Mapões da SED)")
 mapoes_files = st.file_uploader("Suba os arquivos de Mapão aqui", type=["xlsx", "xls"], accept_multiple_files=True)
 
 if mapoes_files:
-    # Exibe quais turmas foram identificadas
     nomes_arquivos = [f.name for f in mapoes_files]
     turmas_detectadas = [nome.replace('.xls', '').replace('.xlsx', '')[:31] for nome in nomes_arquivos]
     
@@ -113,21 +112,20 @@ if mapoes_files:
     
     provas_files = []
     if tem_prova == "Sim":
-        st.info("📌 Suba o(s) arquivo(s) 'RESULTADOS DA TURMA' extraído(s) do BI Educação. O sistema usará a Chave de Segurança (cruzamento exato de nomes sem acentos) para não misturar as notas.")
+        st.info("📌 Suba o(s) arquivo(s) 'RESULTADOS DA TURMA' extraído(s) do BI Educação.")
         provas_files = st.file_uploader("Área de Upload Seguro - Prova Paulista", type=["xlsx", "xls"], accept_multiple_files=True)
         
     st.divider()
     
-    # Validação antes de gerar
     pode_gerar = True
     if tem_prova == "Sim" and not provas_files:
         st.warning("⚠️ Aguardando arquivos: Você marcou que há Prova Paulista, mas ainda não subiu as planilhas do BI.")
         pode_gerar = False
 
     if pode_gerar and st.button("Validar e Gerar Planilha Oficial", type="primary"):
-        with st.spinner('Cruzando dados com segurança e formatando abas...'):
+        with st.spinner('Cruzando dados com segurança e formatando notas...'):
             try:
-                # TRATAR PROVA PAULISTA SE EXISTIR
+                # TRATAR PROVA PAULISTA
                 df_prova_reduzido = pd.DataFrame(columns=['Nome_Chave', 'Prova Paulista'])
                 
                 if tem_prova == "Sim" and provas_files:
@@ -137,14 +135,9 @@ if mapoes_files:
                         df_provas_lista.append(df_p)
                     
                     df_prova_unificado = pd.concat(df_provas_lista, ignore_index=True)
-                    
-                    # Identificar a coluna com o nome do aluno no BI
                     col_nome_prova = 'Nome' if 'Nome' in df_prova_unificado.columns else df_prova_unificado.columns[1]
-                    
-                    # Criar a Chave de Segurança na base do BI
                     df_prova_unificado['Nome_Chave'] = df_prova_unificado[col_nome_prova].apply(normalizar_nome)
                     
-                    # Identificar a coluna da nota
                     coluna_nota = None
                     for col in df_prova_unificado.columns:
                         if '(%) de acertos' in col.lower() or 'nota' in col.lower() or 'percentual' in col.lower():
@@ -153,8 +146,20 @@ if mapoes_files:
                             
                     if coluna_nota:
                         df_prova_reduzido = df_prova_unificado[['Nome_Chave', coluna_nota]].rename(columns={coluna_nota: 'Prova Paulista'})
-                        # Evita erro fatal se a SED duplicou o aluno em alguma lista por erro do sistema deles
                         df_prova_reduzido = df_prova_reduzido.drop_duplicates(subset=['Nome_Chave'])
+                        
+                        # --- FORMATAÇÃO DA NOTA (Inteira, com 1 casa decimal) ---
+                        df_prova_reduzido['Prova Paulista'] = pd.to_numeric(df_prova_reduzido['Prova Paulista'], errors='coerce')
+                        
+                        # Se o sistema der a nota como 0.80 (80%), converte para base 10 (8.0)
+                        if df_prova_reduzido['Prova Paulista'].max() <= 1.0:
+                            df_prova_reduzido['Prova Paulista'] = df_prova_reduzido['Prova Paulista'] * 10
+                            
+                        # Trava em 1 casa decimal com vírgula (ex: 8.0 vira "8,0")
+                        df_prova_reduzido['Prova Paulista'] = df_prova_reduzido['Prova Paulista'].apply(
+                            lambda x: f"{x:.1f}".replace('.', ',') if pd.notnull(x) else ""
+                        )
+                        # ---------------------------------------------------------
 
                 # INICIAR EXCEL OFICIAL
                 wb = Workbook()
@@ -163,38 +168,30 @@ if mapoes_files:
 
                 for i, arq_mapao in enumerate(mapoes_files):
                     nome_aba = turmas_detectadas[i]
-                    
-                    # Ler Mapão usando leitor nativo
                     df_mapao, disciplinas = ler_mapao_robusto(arq_mapao)
                     
                     if df_mapao is None or df_mapao.empty:
                         st.error(f"Erro ao ler os dados da turma {nome_aba}. Verifique o arquivo.")
                         continue
                         
-                    # Criar Chave de Segurança no Mapão
                     df_mapao['Nome_Chave'] = df_mapao['Nome do Aluno'].apply(normalizar_nome)
 
-                    # Cruzamento Seguro (Merge Inflexível pela Chave)
                     if tem_prova == "Sim" and not df_prova_reduzido.empty:
                         df_final = pd.merge(df_mapao, df_prova_reduzido, on='Nome_Chave', how='left')
                     else:
                         df_final = df_mapao.copy()
                         df_final['Prova Paulista'] = ""
                         
-                    # Preencher Coluna Prova Paulista caso a mesclagem gere célula vazia (aluno não fez a prova)
                     if 'Prova Paulista' in df_final.columns:
                         df_final['Prova Paulista'] = df_final['Prova Paulista'].fillna("-")
                         
-                    # Ajustar disciplinas dinâmicas na ordem exata do mapão
                     for disciplina in disciplinas:
                         df_final[disciplina] = ""
                     df_final['Observações'] = ""
 
-                    # Remontar a tabela descartando a coluna da chave invisível
                     colunas_finais = ['Nº', 'Nome do Aluno', 'Sit.', 'Prova Paulista'] + disciplinas + ['Observações']
                     df_final = df_final[colunas_finais]
 
-                    # Montar Aba no Excel
                     ws = wb.create_sheet(title=nome_aba)
                     titulo_linha1 = f"{escola_nome}  ·  {nome_aba} – {turno}  ·  Conselho de Classe — 1º Bimestre / 2026"
                     ws.append([titulo_linha1])
@@ -203,7 +200,6 @@ if mapoes_files:
                     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(colunas_finais))
                     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(colunas_finais))
 
-                    # Pintar Cabeçalho principal
                     for row in ws.iter_rows(min_row=1, max_row=2):
                         for cell in row:
                             cell.font = Font(bold=True, size=12)
@@ -211,17 +207,14 @@ if mapoes_files:
 
                     ws.append(colunas_finais)
                     
-                    # Pintar Cabeçalho de colunas (Azul)
                     for cell in ws[3]:
                         cell.font = Font(bold=True, color="FFFFFF")
                         cell.fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
                         cell.alignment = Alignment(horizontal='center', vertical='center')
 
-                    # Adiciona dados dos alunos
                     for r in dataframe_to_rows(df_final, index=False, header=False):
                         ws.append(r)
                         
-                    # Formatar Larguras
                     ws.column_dimensions['A'].width = 5
                     ws.column_dimensions['B'].width = 45
                     ws.column_dimensions['C'].width = 8
@@ -231,12 +224,11 @@ if mapoes_files:
                         ws.column_dimensions[col_letra].width = 12
                     ws.column_dimensions[chr(64 + len(colunas_finais))].width = 30
 
-                # Prepara o arquivo final para baixar
                 output = io.BytesIO()
                 wb.save(output)
                 output.seek(0)
                 
-                st.success("Tudo validado! O cruzamento das notas foi feito com segurança.")
+                st.success("Tudo validado! O cruzamento das notas foi feito com segurança e a formatação foi aplicada.")
                 st.download_button(
                     label="⬇️ Baixar Planilha Oficial do Conselho",
                     data=output,

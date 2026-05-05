@@ -1,11 +1,10 @@
 import streamlit as st
 import pandas as pd
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, PatternFill
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.utils import get_column_letter
 import io
 import unicodedata
+from reportlab.lib.pagesizes import landscape, A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, PageBreak
+from reportlab.lib import colors
 
 # 1. FUNÇÃO CHAVE: Limpa nomes para cruzamento exato
 def normalizar_nome(nome):
@@ -14,15 +13,35 @@ def normalizar_nome(nome):
     nome = ''.join(c for c in unicodedata.normalize('NFD', nome) if unicodedata.category(c) != 'Mn')
     return nome
 
-# 2. LEITOR DO NOVO MAPÃO DA SED (Com Presença Completa e Filtro de Ativos)
+# 2. ABREVIAÇÃO INTELIGENTE: Necessário para caber no A4
+def abreviar_disciplina(nome):
+    n = str(nome).upper().strip()
+    if 'PORTUGUESA' in n: return 'PORT'
+    if 'FISICA' in n and 'EDUCACAO' not in n and 'EDUCAÇÃO' not in n: return 'FÍS'
+    if 'EDUCACAO FISICA' in n or 'EDUCAÇÃO FÍSICA' in n: return 'ED.FÍS'
+    if 'MATEMATICA' in n or 'MATEMÁTICA' in n: return 'MAT'
+    if 'BIOLOGIA' in n: return 'BIO'
+    if 'HISTORIA' in n or 'HISTÓRIA' in n: return 'HIST'
+    if 'GEOGRAFIA' in n: return 'GEO'
+    if 'FILOSOFIA' in n: return 'FILO'
+    if 'SOCIOLOGIA' in n: return 'SOC'
+    if 'QUIMICA' in n or 'QUÍMICA' in n: return 'QUÍM'
+    if 'ARTE' in n: return 'ARTE'
+    if 'INGLESA' in n or 'INGLÊS' in n: return 'INGL'
+    if 'FINANCEIRA' in n: return 'ED.FIN'
+    if 'REDAÇ' in n or 'REDAC' in n: return 'RED'
+    if 'ATUALIDADE' in n: return 'ATUAL'
+    if 'LIDERANÇA' in n or 'ORATÓRIA' in n: return 'ORAT'
+    if 'PROJETO' in n and 'VIDA' in n: return 'P.VID'
+    return n[:5]
+
+# 3. LEITOR DO NOVO MAPÃO DA SED
 def ler_novo_mapao(arquivo):
     df = pd.read_excel(arquivo, header=None)
     
     turma = arquivo.name.replace('.xls', '').replace('.xlsx', '')[:31]
-    linha_cabecalho_1 = -1
-    linha_cabecalho_2 = -1
+    linha_cabecalho_1, linha_cabecalho_2 = -1, -1
     
-    # Encontrar a Turma e a linha de Cabeçalhos
     for i, row in df.head(20).iterrows():
         for j, cell in enumerate(row):
             if isinstance(cell, str) and "Turma:" in cell:
@@ -32,8 +51,7 @@ def ler_novo_mapao(arquivo):
                     turma = cell.replace("Turma:", "").strip()
             
             if isinstance(cell, str) and cell.strip().upper() == "ALUNO":
-                linha_cabecalho_1 = i
-                linha_cabecalho_2 = i + 1
+                linha_cabecalho_1, linha_cabecalho_2 = i, i + 1
                 
     if linha_cabecalho_1 == -1:
         raise ValueError("Não foi possível encontrar a tabela de alunos neste arquivo.")
@@ -42,25 +60,17 @@ def ler_novo_mapao(arquivo):
     row_2 = df.iloc[linha_cabecalho_2].fillna('').tolist()
     
     disciplinas = []
-    idx_aluno = -1
-    idx_sit = -1
-    col_primeira_disciplina = -1
+    idx_aluno, idx_sit, col_primeira_disciplina = -1, -1, -1
     
-    # Identificar colunas do ALUNO, SITUAÇÃO e as DISCIPLINAS
     for i, val in enumerate(row_1):
         v = str(val).strip()
-        if v.upper() == 'ALUNO':
-            idx_aluno = i
-        elif v.upper() in ['SITUAÇÃO', 'SITUACAO', 'SIT']:
-            idx_sit = i
+        if v.upper() == 'ALUNO': idx_aluno = i
+        elif v.upper() in ['SITUAÇÃO', 'SITUACAO', 'SIT']: idx_sit = i
         elif v and v.upper() != 'TOTAL':
-            # Extrai apenas o nome da disciplina (Ex: 'ARTE\n1813' vira 'ARTE')
             subj_name = v.split('\n')[0].strip()
             disciplinas.append(subj_name)
-            if col_primeira_disciplina == -1:
-                col_primeira_disciplina = i
+            if col_primeira_disciplina == -1: col_primeira_disciplina = i
                 
-    # Identificar colunas de Frequência e Faltas (Quadro TOTAL)
     idx_tf, idx_fre, idx_ft_an, idx_fre_an = -1, -1, -1, -1
     for i, val in enumerate(row_2):
         v = str(val).strip().upper()
@@ -76,36 +86,19 @@ def ler_novo_mapao(arquivo):
         if nome.lower() in ['nan', 'none', '']: continue
         
         sit = str(row[idx_sit]).strip() if idx_sit != -1 else ""
-        
-        # FILTRO IMPORTANTE: Retirar alunos não ativos
-        if 'ATIVO' not in sit.upper() and sit.upper() != 'AT':
-            continue
+        if 'ATIVO' not in sit.upper() and sit.upper() != 'AT': continue
             
-        # O número da chamada (Nº) fica exatamente abaixo do nome da 1ª disciplina
         num = str(row[col_primeira_disciplina]).strip() if pd.notna(row[col_primeira_disciplina]) else ""
         if num.lower() in ["nan", "none"]: num = ""
         
-        # Bloco de Presença e Faltas
-        val_tf = str(row[idx_tf]).strip() if idx_tf != -1 else ""
-        if val_tf.lower() in ["nan", "none"]: val_tf = "-"
-        
-        val_fre = str(row[idx_fre]).strip() if idx_fre != -1 else ""
-        if val_fre.lower() in ["nan", "none"]: val_fre = "-"
-        
-        val_ft_an = str(row[idx_ft_an]).strip() if idx_ft_an != -1 else ""
-        if val_ft_an.lower() in ["nan", "none"]: val_ft_an = "-"
-        
-        val_fre_an = str(row[idx_fre_an]).strip() if idx_fre_an != -1 else ""
-        if val_fre_an.lower() in ["nan", "none"]: val_fre_an = "-"
+        val_tf = str(row[idx_tf]).strip() if idx_tf != -1 else "-"
+        val_fre = str(row[idx_fre]).strip() if idx_fre != -1 else "-"
+        val_ft_an = str(row[idx_ft_an]).strip() if idx_ft_an != -1 else "-"
+        val_fre_an = str(row[idx_fre_an]).strip() if idx_fre_an != -1 else "-"
         
         alunos.append({
-            'Nº': num,
-            'Nome do Aluno': nome,
-            'Sit.': sit,
-            'TF': val_tf,
-            'Fre(%)': val_fre,
-            'FT An': val_ft_an,
-            'Fre An(%)': val_fre_an
+            'Nº': num, 'Nome do Aluno': nome, 'Sit.': sit,
+            'TF': val_tf, 'Fre(%)': val_fre, 'FT An': val_ft_an, 'Fre An(%)': val_fre_an
         })
         
     return pd.DataFrame(alunos), disciplinas, turma
@@ -113,7 +106,7 @@ def ler_novo_mapao(arquivo):
 # --- INÍCIO DO APP STREAMLIT ---
 st.set_page_config(page_title="Gerador de Conselho", layout="centered")
 
-st.title("📚 Sistema do Conselho de Classe")
+st.title("📄 Sistema do Conselho de Classe (PDF)")
 st.write("**ESCOLA ESTADUAL AMERICO BRASILIENSE DOUTOR**")
 
 turno = st.selectbox("Turno:", ["Manhã", "Tarde", "Noite", "Integral"])
@@ -122,7 +115,7 @@ st.subheader("Passo 1: Carregar Turmas (Mapões da SED)")
 mapoes_files = st.file_uploader("Suba os arquivos de Mapão aqui", type=["xlsx", "xls"], accept_multiple_files=True)
 
 if mapoes_files:
-    st.success(f"✅ {len(mapoes_files)} arquivo(s) carregado(s). Alunos inativos serão ocultados automaticamente.")
+    st.success(f"✅ {len(mapoes_files)} arquivo(s) carregado(s).")
     st.divider()
     
     st.subheader("Passo 2: Configurar Prova Paulista")
@@ -137,13 +130,12 @@ if mapoes_files:
     
     pode_gerar = True
     if tem_prova == "Sim" and not provas_files:
-        st.warning("⚠️ Aguardando arquivos: Você marcou que há Prova Paulista, mas ainda não subiu as planilhas do BI.")
+        st.warning("⚠️ Aguardando arquivos da Prova Paulista.")
         pode_gerar = False
 
-    if pode_gerar and st.button("Validar e Gerar Planilha Oficial", type="primary"):
-        with st.spinner('Lendo dados, calculando presenças e cruzando notas...'):
+    if pode_gerar and st.button("Gerar Caderno do Conselho (PDF)", type="primary"):
+        with st.spinner('Desenhando páginas A4 e cruzando dados...'):
             try:
-                # TRATAR PROVA PAULISTA
                 df_prova_reduzido = pd.DataFrame(columns=['Nome_Chave', 'Prova Paulista'])
                 
                 if tem_prova == "Sim" and provas_files:
@@ -165,7 +157,6 @@ if mapoes_files:
                     if coluna_nota:
                         df_prova_reduzido = df_prova_unificado[['Nome_Chave', coluna_nota]].rename(columns={coluna_nota: 'Prova Paulista'})
                         df_prova_reduzido = df_prova_reduzido.drop_duplicates(subset=['Nome_Chave'])
-                        
                         df_prova_reduzido['Prova Paulista'] = pd.to_numeric(df_prova_reduzido['Prova Paulista'], errors='coerce')
                         
                         if df_prova_reduzido['Prova Paulista'].max() <= 1.0:
@@ -175,18 +166,17 @@ if mapoes_files:
                             lambda x: f"{x:.1f}".replace('.', ',') if pd.notnull(x) else ""
                         )
 
-                # INICIAR EXCEL OFICIAL
-                wb = Workbook()
-                wb.remove(wb.active)
-                escola_nome = "ESCOLA ESTADUAL AMERICO BRASILIENSE DOUTOR"
+                # CONFIGURAÇÃO DO PDF
+                pdf_buffer = io.BytesIO()
+                # A4 Paisagem com margens de 20 pontos
+                doc = SimpleDocTemplate(pdf_buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+                elementos_pdf = []
+                escola_nome = "E.E. Dr. Américo Brasiliense"
 
-                for i, arq_mapao in enumerate(mapoes_files):
-                    # LEITURA DO NOVO MODELO
+                for arq_mapao in mapoes_files:
                     df_mapao, disciplinas, nome_turma = ler_novo_mapao(arq_mapao)
                     
-                    if df_mapao is None or df_mapao.empty:
-                        st.error(f"Erro: A turma do arquivo {arq_mapao.name} não gerou alunos (talvez todos estejam inativos?).")
-                        continue
+                    if df_mapao is None or df_mapao.empty: continue
                         
                     df_mapao['Nome_Chave'] = df_mapao['Nome do Aluno'].apply(normalizar_nome)
 
@@ -198,64 +188,81 @@ if mapoes_files:
                         
                     if 'Prova Paulista' in df_final.columns:
                         df_final['Prova Paulista'] = df_final['Prova Paulista'].fillna("-")
+
+                    # Montagem da Tabela para o PDF
+                    colunas_finais = ['Nº', 'Nome', 'Sit.', 'TF', 'Fre(%)', 'FT An', 'Fre An(%)', 'Prova'] + [abreviar_disciplina(d) for d in disciplinas] + ['Obs.']
+                    
+                    # Cálculo matemático perfeito para preencher a largura do A4 (802 pontos)
+                    fixed_widths = [18, 140, 30, 20, 32, 28, 42, 28] # Total = 338
+                    obs_width = 50
+                    rem_width = 802 - sum(fixed_widths) - obs_width
+                    disc_width = rem_width / max(len(disciplinas), 1)
+                    widths = fixed_widths + [disc_width]*len(disciplinas) + [obs_width]
+
+                    title = f"{escola_nome}  |  {nome_turma} – {turno}  |  Conselho 1º Bimestre / 2026"
+                    
+                    data_table = []
+                    data_table.append([title] + [''] * (len(colunas_finais) - 1))
+                    data_table.append(colunas_finais)
+
+                    df_final = df_final.fillna("-")
+                    for _, row in df_final.iterrows():
+                        # Corta o nome um pouco para não quebrar a tabela se o nome for gigante
+                        nome_trunc = str(row['Nome do Aluno'])[:38] 
+                        sit_trunc = str(row['Sit.'])[:5] # Ativo -> Ativo
                         
-                    for disciplina in disciplinas:
-                        df_final[disciplina] = ""
-                    df_final['Observações'] = ""
+                        linha = [
+                            str(row['Nº']), nome_trunc, sit_trunc,
+                            str(row['TF']).replace("nan", "-"), str(row['Fre(%)']).replace("nan", "-"), 
+                            str(row['FT An']).replace("nan", "-"), str(row['Fre An(%)']).replace("nan", "-"),
+                            str(row['Prova Paulista'])
+                        ] + ["" for _ in disciplinas] + [""]
+                        data_table.append(linha)
 
-                    # Remontando colunas com o quadro TOTAL completo
-                    colunas_finais = ['Nº', 'Nome do Aluno', 'Sit.', 'TF', 'Fre(%)', 'FT An', 'Fre An(%)', 'Prova Paulista'] + disciplinas + ['Observações']
-                    df_final = df_final[colunas_finais]
+                    # Desenho e Estilo da Tabela
+                    t = Table(data_table, colWidths=widths, repeatRows=2)
+                    t.setStyle(TableStyle([
+                        # Cabeçalho Principal (Mesclado)
+                        ('SPAN', (0,0), (-1,0)),
+                        ('ALIGN', (0,0), (-1,0), 'CENTER'),
+                        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0,0), (-1,0), 9),
+                        ('BOTTOMPADDING', (0,0), (-1,0), 6),
 
-                    nome_aba = nome_turma[:31] 
-                    ws = wb.create_sheet(title=nome_aba)
+                        # Linha de Colunas
+                        ('BACKGROUND', (0,1), (-1,1), colors.HexColor("#4F81BD")),
+                        ('TEXTCOLOR', (0,1), (-1,1), colors.whitesmoke),
+                        ('ALIGN', (0,1), (-1,1), 'CENTER'),
+                        ('VALIGN', (0,1), (-1,1), 'MIDDLE'),
+                        ('FONTNAME', (0,1), (-1,1), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0,1), (-1,1), 6.5),
+
+                        # Dados dos Alunos
+                        ('FONTNAME', (0,2), (-1,-1), 'Helvetica'),
+                        ('FONTSIZE', (0,2), (-1,-1), 6.5), # Fonte pequena para caber
+                        ('ALIGN', (0,2), (0,-1), 'CENTER'), # Centraliza Nº
+                        ('ALIGN', (1,2), (1,-1), 'LEFT'),   # Esquerda no Nome
+                        ('ALIGN', (2,2), (-1,-1), 'CENTER'), # Centraliza o resto
+                        ('VALIGN', (0,2), (-1,-1), 'MIDDLE'),
+
+                        # Bordas e Cores alternadas (Zebra) para facilitar leitura na régua
+                        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                        ('ROWBACKGROUNDS', (0,2), (-1,-1), [colors.white, colors.HexColor("#F2F2F2")])
+                    ]))
                     
-                    titulo_linha1 = f"{escola_nome}  ·  {nome_turma} – {turno}  ·  Conselho de Classe — 1º Bimestre / 2026"
-                    ws.append([titulo_linha1])
-                    ws.append(["Tipo de Ensino: Ensino Fundamental de 9 Anos / Ensino Médio / EJA"])
-                    
-                    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(colunas_finais))
-                    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(colunas_finais))
+                    elementos_pdf.append(t)
+                    elementos_pdf.append(PageBreak()) # Garante que a próxima turma comece em uma página NOVA
 
-                    for row in ws.iter_rows(min_row=1, max_row=2):
-                        for cell in row:
-                            cell.font = Font(bold=True, size=12)
-                            cell.alignment = Alignment(horizontal='center', vertical='center')
-
-                    ws.append(colunas_finais)
-                    
-                    for cell in ws[3]:
-                        cell.font = Font(bold=True, color="FFFFFF")
-                        cell.fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
-                        cell.alignment = Alignment(horizontal='center', vertical='center')
-
-                    for r in dataframe_to_rows(df_final, index=False, header=False):
-                        ws.append(r)
-                        
-                    # Ajuste Dinâmico e Limpo das larguras
-                    for j, col_name in enumerate(colunas_finais, start=1):
-                        col_letra = get_column_letter(j)
-                        if col_name == 'Nº': ws.column_dimensions[col_letra].width = 5
-                        elif col_name == 'Nome do Aluno': ws.column_dimensions[col_letra].width = 45
-                        elif col_name == 'Sit.': ws.column_dimensions[col_letra].width = 10
-                        elif col_name == 'TF': ws.column_dimensions[col_letra].width = 6
-                        elif col_name == 'Fre(%)': ws.column_dimensions[col_letra].width = 10
-                        elif col_name == 'FT An': ws.column_dimensions[col_letra].width = 8
-                        elif col_name == 'Fre An(%)': ws.column_dimensions[col_letra].width = 12
-                        elif col_name == 'Prova Paulista': ws.column_dimensions[col_letra].width = 15
-                        elif col_name == 'Observações': ws.column_dimensions[col_letra].width = 30
-                        else: ws.column_dimensions[col_letra].width = 12 # Colunas das disciplinas
-
-                output = io.BytesIO()
-                wb.save(output)
-                output.seek(0)
+                # Finaliza a montagem do documento PDF
+                doc.build(elementos_pdf)
                 
-                st.success("Sucesso! Planilha gerada com o quadro completo de presenças e alunos inativos removidos.")
+                pdf_buffer.seek(0)
+                st.success("Caderno do conselho gerado! Pronto para impressão em A4.")
                 st.download_button(
-                    label="⬇️ Baixar Planilha Oficial do Conselho",
-                    data=output,
-                    file_name=f"Conselho_Classe_{turno}_Consolidado.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    label="⬇️ Baixar Caderno Oficial (PDF)",
+                    data=pdf_buffer,
+                    file_name=f"Conselho_Classe_{turno}_Caderno.pdf",
+                    mime="application/pdf"
                 )
             except Exception as e:
-                st.error(f"Ocorreu um problema ao gerar: {e}")
+                st.error(f"Ocorreu um problema ao gerar o PDF: {e}")

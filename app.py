@@ -3,6 +3,7 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.utils import get_column_letter
 import io
 import unicodedata
 
@@ -13,7 +14,7 @@ def normalizar_nome(nome):
     nome = ''.join(c for c in unicodedata.normalize('NFD', nome) if unicodedata.category(c) != 'Mn')
     return nome
 
-# 2. LEITOR DO NOVO MAPÃO DA SED (Com Presença e Filtro de Ativos)
+# 2. LEITOR DO NOVO MAPÃO DA SED (Com Presença Completa e Filtro de Ativos)
 def ler_novo_mapao(arquivo):
     df = pd.read_excel(arquivo, header=None)
     
@@ -59,13 +60,14 @@ def ler_novo_mapao(arquivo):
             if col_primeira_disciplina == -1:
                 col_primeira_disciplina = i
                 
-    # Identificar coluna de Frequência (%)
-    idx_total_fre = -1
+    # Identificar colunas de Frequência e Faltas (Quadro TOTAL)
+    idx_tf, idx_fre, idx_ft_an, idx_fre_an = -1, -1, -1, -1
     for i, val in enumerate(row_2):
-        v = str(val).strip()
-        if "Fre(%)" in v or "Fre (%)" in v:
-            idx_total_fre = i
-            break
+        v = str(val).strip().upper()
+        if v == 'TF': idx_tf = i
+        elif v in ['FRE(%)', 'FRE (%)']: idx_fre = i
+        elif v in ['FT AN', 'FT AN.', 'FT. AN.']: idx_ft_an = i
+        elif v in ['FRE AN(%)', 'FRE.AN(%)', 'FRE AN (%)']: idx_fre_an = i
             
     alunos = []
     for i in range(linha_cabecalho_2 + 1, len(df)):
@@ -83,15 +85,27 @@ def ler_novo_mapao(arquivo):
         num = str(row[col_primeira_disciplina]).strip() if pd.notna(row[col_primeira_disciplina]) else ""
         if num.lower() in ["nan", "none"]: num = ""
         
-        # Presença
-        presenca = str(row[idx_total_fre]).strip() if idx_total_fre != -1 else ""
-        if presenca.lower() in ["nan", "none"]: presenca = "-"
+        # Bloco de Presença e Faltas
+        val_tf = str(row[idx_tf]).strip() if idx_tf != -1 else ""
+        if val_tf.lower() in ["nan", "none"]: val_tf = "-"
+        
+        val_fre = str(row[idx_fre]).strip() if idx_fre != -1 else ""
+        if val_fre.lower() in ["nan", "none"]: val_fre = "-"
+        
+        val_ft_an = str(row[idx_ft_an]).strip() if idx_ft_an != -1 else ""
+        if val_ft_an.lower() in ["nan", "none"]: val_ft_an = "-"
+        
+        val_fre_an = str(row[idx_fre_an]).strip() if idx_fre_an != -1 else ""
+        if val_fre_an.lower() in ["nan", "none"]: val_fre_an = "-"
         
         alunos.append({
             'Nº': num,
             'Nome do Aluno': nome,
             'Sit.': sit,
-            'Frequência (%)': presenca
+            'TF': val_tf,
+            'Fre(%)': val_fre,
+            'FT An': val_ft_an,
+            'Fre An(%)': val_fre_an
         })
         
     return pd.DataFrame(alunos), disciplinas, turma
@@ -127,7 +141,7 @@ if mapoes_files:
         pode_gerar = False
 
     if pode_gerar and st.button("Validar e Gerar Planilha Oficial", type="primary"):
-        with st.spinner('Lendo dados, calculando presença e cruzando notas...'):
+        with st.spinner('Lendo dados, calculando presenças e cruzando notas...'):
             try:
                 # TRATAR PROVA PAULISTA
                 df_prova_reduzido = pd.DataFrame(columns=['Nome_Chave', 'Prova Paulista'])
@@ -189,8 +203,8 @@ if mapoes_files:
                         df_final[disciplina] = ""
                     df_final['Observações'] = ""
 
-                    # Remontando colunas, agora incluindo Frequência
-                    colunas_finais = ['Nº', 'Nome do Aluno', 'Sit.', 'Frequência (%)', 'Prova Paulista'] + disciplinas + ['Observações']
+                    # Remontando colunas com o quadro TOTAL completo
+                    colunas_finais = ['Nº', 'Nome do Aluno', 'Sit.', 'TF', 'Fre(%)', 'FT An', 'Fre An(%)', 'Prova Paulista'] + disciplinas + ['Observações']
                     df_final = df_final[colunas_finais]
 
                     nome_aba = nome_turma[:31] 
@@ -218,23 +232,25 @@ if mapoes_files:
                     for r in dataframe_to_rows(df_final, index=False, header=False):
                         ws.append(r)
                         
-                    # Ajuste de larguras (incluindo a nova coluna Frequência)
-                    ws.column_dimensions['A'].width = 5   # Nº
-                    ws.column_dimensions['B'].width = 45  # Nome
-                    ws.column_dimensions['C'].width = 10  # Sit.
-                    ws.column_dimensions['D'].width = 15  # Frequência
-                    ws.column_dimensions['E'].width = 15  # Prova Paulista
-                    
-                    for j in range(6, len(colunas_finais)):
-                        col_letra = chr(64 + j) if j <= 26 else chr(64 + (j // 26)) + chr(64 + (j % 26))
-                        ws.column_dimensions[col_letra].width = 12
-                    ws.column_dimensions[chr(64 + len(colunas_finais))].width = 30 # Observações
+                    # Ajuste Dinâmico e Limpo das larguras
+                    for j, col_name in enumerate(colunas_finais, start=1):
+                        col_letra = get_column_letter(j)
+                        if col_name == 'Nº': ws.column_dimensions[col_letra].width = 5
+                        elif col_name == 'Nome do Aluno': ws.column_dimensions[col_letra].width = 45
+                        elif col_name == 'Sit.': ws.column_dimensions[col_letra].width = 10
+                        elif col_name == 'TF': ws.column_dimensions[col_letra].width = 6
+                        elif col_name == 'Fre(%)': ws.column_dimensions[col_letra].width = 10
+                        elif col_name == 'FT An': ws.column_dimensions[col_letra].width = 8
+                        elif col_name == 'Fre An(%)': ws.column_dimensions[col_letra].width = 12
+                        elif col_name == 'Prova Paulista': ws.column_dimensions[col_letra].width = 15
+                        elif col_name == 'Observações': ws.column_dimensions[col_letra].width = 30
+                        else: ws.column_dimensions[col_letra].width = 12 # Colunas das disciplinas
 
                 output = io.BytesIO()
                 wb.save(output)
                 output.seek(0)
                 
-                st.success("Sucesso! Planilha gerada com frequência (%) inclusa e alunos inativos removidos.")
+                st.success("Sucesso! Planilha gerada com o quadro completo de presenças e alunos inativos removidos.")
                 st.download_button(
                     label="⬇️ Baixar Planilha Oficial do Conselho",
                     data=output,

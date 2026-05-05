@@ -6,108 +6,95 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 import io
 import unicodedata
 
-# 1. FUNÇÃO CHAVE: Limpa nomes para evitar erros
+# 1. FUNÇÃO CHAVE: Limpa nomes para cruzamento exato
 def normalizar_nome(nome):
     if pd.isna(nome): return ""
     nome = str(nome).strip().upper()
     nome = ''.join(c for c in unicodedata.normalize('NFD', nome) if unicodedata.category(c) != 'Mn')
     return nome
 
-# 2. LEITOR DA SED: Resolve o problema do Excel HTML e puxa a Turma
-def ler_mapao_robusto(arquivo):
-    try:
-        tabelas = pd.read_html(arquivo)
-        df_bruto = tabelas[0]
-        
-        linha_disciplinas, linha_nome = -1, -1
-        nome_turma = arquivo.name.replace('.xls', '').replace('.xlsx', '')[:31] # Nome padrão se falhar
-        
-        # Caçador de Turma e Cabeçalhos
-        for i, row in df_bruto.iterrows():
-            row_str_full = row.dropna().astype(str).tolist()
-            for cell in row_str_full:
-                if "Turma:" in cell:
-                    nome_turma = cell.replace("Turma:", "").strip()
-                    
-            row_str = row.astype(str).str.lower()
-            if 'aluno' in row_str.values: linha_disciplinas = i
-            if 'nome' in row_str.values and ('sit' in row_str.values or 'situação' in row_str.values):
-                linha_nome = i
-                break
-                
-        disciplinas = []
-        if linha_disciplinas != -1:
-            for val in df_bruto.iloc[linha_disciplinas]:
-                val_str = str(val).strip()
-                if val_str.lower() not in ['nan', 'aluno', 'total', 'none'] and val_str not in disciplinas:
-                    disciplinas.append(val_str)
-                    
-        alunos = []
-        if linha_nome != -1:
-            row_nome = df_bruto.iloc[linha_nome].astype(str).str.lower()
-            idx_nome, idx_sit, idx_num = -1, -1, -1
+# 2. LEITOR DO NOVO MAPÃO DA SED (Com Presença e Filtro de Ativos)
+def ler_novo_mapao(arquivo):
+    df = pd.read_excel(arquivo, header=None)
+    
+    turma = arquivo.name.replace('.xls', '').replace('.xlsx', '')[:31]
+    linha_cabecalho_1 = -1
+    linha_cabecalho_2 = -1
+    
+    # Encontrar a Turma e a linha de Cabeçalhos
+    for i, row in df.head(20).iterrows():
+        for j, cell in enumerate(row):
+            if isinstance(cell, str) and "Turma:" in cell:
+                if cell.strip() == "Turma:" and j+1 < len(row):
+                    turma = str(row[j+1]).strip()
+                else:
+                    turma = cell.replace("Turma:", "").strip()
             
-            # Trava as colunas corretas para preservar o Número de Chamada (Nº) fiel ao mapão
-            for col_idx, val in enumerate(row_nome):
-                if val == 'nome' and idx_nome == -1: idx_nome = col_idx
-                if val in ['sit', 'situação'] and idx_sit == -1: idx_sit = col_idx
-                if val in ['nº', 'numero', 'chamada', 'n'] and idx_num == -1: idx_num = col_idx
+            if isinstance(cell, str) and cell.strip().upper() == "ALUNO":
+                linha_cabecalho_1 = i
+                linha_cabecalho_2 = i + 1
                 
-            if idx_num == -1 and idx_sit != -1: idx_num = idx_sit + 1
+    if linha_cabecalho_1 == -1:
+        raise ValueError("Não foi possível encontrar a tabela de alunos neste arquivo.")
+        
+    row_1 = df.iloc[linha_cabecalho_1].fillna('').tolist()
+    row_2 = df.iloc[linha_cabecalho_2].fillna('').tolist()
+    
+    disciplinas = []
+    idx_aluno = -1
+    idx_sit = -1
+    col_primeira_disciplina = -1
+    
+    # Identificar colunas do ALUNO, SITUAÇÃO e as DISCIPLINAS
+    for i, val in enumerate(row_1):
+        v = str(val).strip()
+        if v.upper() == 'ALUNO':
+            idx_aluno = i
+        elif v.upper() in ['SITUAÇÃO', 'SITUACAO', 'SIT']:
+            idx_sit = i
+        elif v and v.upper() != 'TOTAL':
+            # Extrai apenas o nome da disciplina (Ex: 'ARTE\n1813' vira 'ARTE')
+            subj_name = v.split('\n')[0].strip()
+            disciplinas.append(subj_name)
+            if col_primeira_disciplina == -1:
+                col_primeira_disciplina = i
+                
+    # Identificar coluna de Frequência (%)
+    idx_total_fre = -1
+    for i, val in enumerate(row_2):
+        v = str(val).strip()
+        if "Fre(%)" in v or "Fre (%)" in v:
+            idx_total_fre = i
+            break
             
-            for i in range(linha_nome + 1, len(df_bruto)):
-                row = df_bruto.iloc[i]
-                nome = str(row[idx_nome]).strip()
-                if nome.lower() in ['nan', 'none', '']: continue
-                if len(nome) < 3: continue 
-                
-                sit = str(row[idx_sit]).strip() if idx_sit != -1 else ""
-                # Preserva o número de chamada exatamente como está (ex: "01")
-                num = str(row[idx_num]).strip() if idx_num != -1 else ""
-                if num == "nan" or num == "None": num = ""
-                
-                alunos.append({'Nº': num, 'Nome do Aluno': nome, 'Sit.': sit})
-                
-        return pd.DataFrame(alunos), disciplinas, nome_turma
-    except Exception:
-        # Fallback (para arquivos XLS/XLSX verdadeiros)
-        df = pd.read_excel(arquivo, header=None)
-        nome_turma = arquivo.name.replace('.xls', '').replace('.xlsx', '')[:31]
+    alunos = []
+    for i in range(linha_cabecalho_2 + 1, len(df)):
+        row = df.iloc[i]
+        nome = str(row[idx_aluno]).strip()
+        if nome.lower() in ['nan', 'none', '']: continue
         
-        linha_cabecalho = 0
-        for i, linha in df.iterrows():
-            linha_str_full = linha.dropna().astype(str).tolist()
-            for cell in linha_str_full:
-                if "Turma:" in cell:
-                    nome_turma = cell.replace("Turma:", "").strip()
-                    
-            linha_str = linha.astype(str).str.lower()
-            if linha_str.str.contains('nome do aluno|nome|aluno', na=False).any():
-                linha_cabecalho = i
-                break
-                
-        df = pd.read_excel(arquivo, skiprows=linha_cabecalho)
-        df.columns = df.columns.astype(str).str.strip()
+        sit = str(row[idx_sit]).strip() if idx_sit != -1 else ""
         
-        for col in df.columns:
-            if 'nome' in col.lower() or 'aluno' in col.lower():
-                df.rename(columns={col: 'Nome do Aluno'}, inplace=True)
-                break
+        # FILTRO IMPORTANTE: Retirar alunos não ativos
+        if 'ATIVO' not in sit.upper() and sit.upper() != 'AT':
+            continue
+            
+        # O número da chamada (Nº) fica exatamente abaixo do nome da 1ª disciplina
+        num = str(row[col_primeira_disciplina]).strip() if pd.notna(row[col_primeira_disciplina]) else ""
+        if num.lower() in ["nan", "none"]: num = ""
         
-        colunas_padrao = ['Nº', 'Nome do Aluno', 'Sit.']
-        for col in df.columns:
-            if 'sit' in col.lower(): df.rename(columns={col: 'Sit.'}, inplace=True)
-            if 'nº' in col.lower() or 'numero' in col.lower() or 'chamada' in col.lower(): df.rename(columns={col: 'Nº'}, inplace=True)
+        # Presença
+        presenca = str(row[idx_total_fre]).strip() if idx_total_fre != -1 else ""
+        if presenca.lower() in ["nan", "none"]: presenca = "-"
         
-        if 'Sit.' not in df.columns: df['Sit.'] = ""
-        if 'Nº' not in df.columns: df['Nº'] = ""
+        alunos.append({
+            'Nº': num,
+            'Nome do Aluno': nome,
+            'Sit.': sit,
+            'Frequência (%)': presenca
+        })
         
-        # Converte número para texto para não perder zero à esquerda
-        df['Nº'] = df['Nº'].astype(str).str.replace(r'\.0$', '', regex=True)
-        df.loc[df['Nº'] == 'nan', 'Nº'] = ""
-        
-        disciplinas = [col for col in df.columns if col not in colunas_padrao and 'unnamed' not in col.lower()]
-        return df[colunas_padrao].dropna(subset=['Nome do Aluno']), disciplinas, nome_turma
+    return pd.DataFrame(alunos), disciplinas, turma
 
 # --- INÍCIO DO APP STREAMLIT ---
 st.set_page_config(page_title="Gerador de Conselho", layout="centered")
@@ -121,8 +108,7 @@ st.subheader("Passo 1: Carregar Turmas (Mapões da SED)")
 mapoes_files = st.file_uploader("Suba os arquivos de Mapão aqui", type=["xlsx", "xls"], accept_multiple_files=True)
 
 if mapoes_files:
-    # Exibe no painel apenas a quantidade de arquivos para manter limpo
-    st.success(f"✅ {len(mapoes_files)} arquivo(s) carregado(s). O sistema vai ler a turma oficial de dentro de cada um.")
+    st.success(f"✅ {len(mapoes_files)} arquivo(s) carregado(s). Alunos inativos serão ocultados automaticamente.")
     st.divider()
     
     st.subheader("Passo 2: Configurar Prova Paulista")
@@ -141,7 +127,7 @@ if mapoes_files:
         pode_gerar = False
 
     if pode_gerar and st.button("Validar e Gerar Planilha Oficial", type="primary"):
-        with st.spinner('Lendo turmas da SED e cruzando notas de forma segura...'):
+        with st.spinner('Lendo dados, calculando presença e cruzando notas...'):
             try:
                 # TRATAR PROVA PAULISTA
                 df_prova_reduzido = pd.DataFrame(columns=['Nome_Chave', 'Prova Paulista'])
@@ -181,11 +167,11 @@ if mapoes_files:
                 escola_nome = "ESCOLA ESTADUAL AMERICO BRASILIENSE DOUTOR"
 
                 for i, arq_mapao in enumerate(mapoes_files):
-                    # AGORA EXTRAIMOS A TURMA REAL DE DENTRO DO MAPÃO
-                    df_mapao, disciplinas, nome_turma = ler_mapao_robusto(arq_mapao)
+                    # LEITURA DO NOVO MODELO
+                    df_mapao, disciplinas, nome_turma = ler_novo_mapao(arq_mapao)
                     
                     if df_mapao is None or df_mapao.empty:
-                        st.error(f"Erro ao ler os dados do arquivo {arq_mapao.name}. Verifique o formato.")
+                        st.error(f"Erro: A turma do arquivo {arq_mapao.name} não gerou alunos (talvez todos estejam inativos?).")
                         continue
                         
                     df_mapao['Nome_Chave'] = df_mapao['Nome do Aluno'].apply(normalizar_nome)
@@ -203,15 +189,13 @@ if mapoes_files:
                         df_final[disciplina] = ""
                     df_final['Observações'] = ""
 
-                    colunas_finais = ['Nº', 'Nome do Aluno', 'Sit.', 'Prova Paulista'] + disciplinas + ['Observações']
+                    # Remontando colunas, agora incluindo Frequência
+                    colunas_finais = ['Nº', 'Nome do Aluno', 'Sit.', 'Frequência (%)', 'Prova Paulista'] + disciplinas + ['Observações']
                     df_final = df_final[colunas_finais]
 
-                    # Aba do Excel limitada a 31 caracteres, mas usando o nome real da turma
                     nome_aba = nome_turma[:31] 
-                    
                     ws = wb.create_sheet(title=nome_aba)
                     
-                    # Cabeçalho usando o nome EXATO da turma que estava no Mapão
                     titulo_linha1 = f"{escola_nome}  ·  {nome_turma} – {turno}  ·  Conselho de Classe — 1º Bimestre / 2026"
                     ws.append([titulo_linha1])
                     ws.append(["Tipo de Ensino: Ensino Fundamental de 9 Anos / Ensino Médio / EJA"])
@@ -234,20 +218,23 @@ if mapoes_files:
                     for r in dataframe_to_rows(df_final, index=False, header=False):
                         ws.append(r)
                         
-                    ws.column_dimensions['A'].width = 5
-                    ws.column_dimensions['B'].width = 45
-                    ws.column_dimensions['C'].width = 8
-                    ws.column_dimensions['D'].width = 15
-                    for j in range(5, len(colunas_finais)):
+                    # Ajuste de larguras (incluindo a nova coluna Frequência)
+                    ws.column_dimensions['A'].width = 5   # Nº
+                    ws.column_dimensions['B'].width = 45  # Nome
+                    ws.column_dimensions['C'].width = 10  # Sit.
+                    ws.column_dimensions['D'].width = 15  # Frequência
+                    ws.column_dimensions['E'].width = 15  # Prova Paulista
+                    
+                    for j in range(6, len(colunas_finais)):
                         col_letra = chr(64 + j) if j <= 26 else chr(64 + (j // 26)) + chr(64 + (j % 26))
                         ws.column_dimensions[col_letra].width = 12
-                    ws.column_dimensions[chr(64 + len(colunas_finais))].width = 30
+                    ws.column_dimensions[chr(64 + len(colunas_finais))].width = 30 # Observações
 
                 output = io.BytesIO()
                 wb.save(output)
                 output.seek(0)
                 
-                st.success("Sucesso! As turmas foram nomeadas corretamente com os números de chamada idênticos à SED.")
+                st.success("Sucesso! Planilha gerada com frequência (%) inclusa e alunos inativos removidos.")
                 st.download_button(
                     label="⬇️ Baixar Planilha Oficial do Conselho",
                     data=output,

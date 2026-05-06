@@ -61,7 +61,7 @@ def ler_novo_mapao(arquivo):
     row_2 = df.iloc[linha_cabecalho_2].fillna('').tolist()
     
     disciplinas = []
-    subject_m_cols = {} # Mapeia qual a coluna da "Média" (M) de cada disciplina
+    subject_m_cols = {}
     idx_aluno, idx_sit, col_primeira_disciplina = -1, -1, -1
     
     for i, val in enumerate(row_1):
@@ -71,7 +71,7 @@ def ler_novo_mapao(arquivo):
         elif v and v.upper() != 'TOTAL':
             subj_name = v.split('\n')[0].strip()
             disciplinas.append(subj_name)
-            subject_m_cols[subj_name] = i + 1 # A coluna M sempre fica 1 casa à direita do cabeçalho da disciplina
+            subject_m_cols[subj_name] = i + 1 
             if col_primeira_disciplina == -1: col_primeira_disciplina = i
                 
     idx_tf, idx_fre, idx_ft_an, idx_fre_an = -1, -1, -1, -1
@@ -104,7 +104,6 @@ def ler_novo_mapao(arquivo):
             'TF': val_tf, 'Fre(%)': val_fre, 'FT An': val_ft_an, 'Fre An(%)': val_fre_an
         }
         
-        # RADAR DE NOTA VERMELHA: Checa a média de cada disciplina
         for subj_name, m_col_idx in subject_m_cols.items():
             m_val = str(row[m_col_idx]).strip().replace(',', '.')
             is_red = False
@@ -112,7 +111,7 @@ def ler_novo_mapao(arquivo):
                 if float(m_val) < 5.0:
                     is_red = True
             except ValueError:
-                pass # Se for vazio ou caractere estranho, ignora
+                pass 
                 
             aluno_data[subj_name] = "RED" if is_red else ""
             
@@ -205,7 +204,6 @@ if mapoes_files:
                     if 'Prova Paulista' in df_final.columns:
                         df_final['Prova Paulista'] = df_final['Prova Paulista'].fillna("-")
 
-                    # Montagem da Tabela Principal
                     colunas_finais = ['Nº', 'Nome', 'Sit.', 'TF', 'Fre(%)', 'FT An', 'Fre An(%)', 'Prova'] + [abreviar_disciplina(d) for d in disciplinas] + ['Obs.']
                     
                     fixed_widths = [18, 140, 30, 20, 32, 28, 42, 28] 
@@ -220,7 +218,7 @@ if mapoes_files:
                     data_table.append([title] + [''] * (len(colunas_finais) - 1))
                     data_table.append(colunas_finais)
 
-                    # Estilos dinâmicos da tabela (aqui aplicamos as cores do radar)
+                    # Estilos dinâmicos da tabela (Tudo em branco, exceto cabeçalho e radar)
                     custom_styles = [
                         ('SPAN', (0,0), (-1,0)),
                         ('ALIGN', (0,0), (-1,0), 'CENTER'),
@@ -240,7 +238,6 @@ if mapoes_files:
                         ('ALIGN', (2,2), (-1,-1), 'CENTER'), 
                         ('VALIGN', (0,2), (-1,-1), 'MIDDLE'),
                         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-                        ('ROWBACKGROUNDS', (0,2), (-1,-1), [colors.white, colors.HexColor("#F2F2F2")])
                     ]
 
                     df_final = df_final.fillna("-")
@@ -255,34 +252,29 @@ if mapoes_files:
                             str(row['Prova Paulista'])
                         ]
                         
-                        # Processando o Radar de Notas
                         for subj_idx, subj in enumerate(disciplinas):
                             val = row.get(subj, "")
                             if val == "RED":
-                                linha.append("........") # Pontilhado para o professor marcar
+                                linha.append("........") 
                                 pdf_r = row_idx + 2
                                 pdf_c = 8 + subj_idx
-                                # Pinta o fundo de cinza claro e a letra de cinza médio
                                 custom_styles.append(('BACKGROUND', (pdf_c, pdf_r), (pdf_c, pdf_r), colors.HexColor("#EAEAEA")))
                                 custom_styles.append(('TEXTCOLOR', (pdf_c, pdf_r), (pdf_c, pdf_r), colors.HexColor("#A0A0A0")))
                             else:
                                 linha.append("")
                         
-                        linha.append("") # Coluna Obs
+                        linha.append("") 
                         data_table.append(linha)
 
                     t = Table(data_table, colWidths=widths, repeatRows=2)
                     t.setStyle(TableStyle(custom_styles))
                     elementos_pdf.append(t)
                     
-                    # --- BLOCO FINAL: PERFIL DA TURMA E ASSINATURAS ---
-                    # KeepTogether garante que o perfil e assinaturas não sejam divididos na quebra de página
                     bloco_final = []
                     bloco_final.append(Spacer(1, 20))
                     bloco_final.append(Paragraph("<b>Perfil da Turma / Decisões do Conselho:</b>", styles_text['Normal']))
                     bloco_final.append(Spacer(1, 8))
                     
-                    # Tabela vazia gerando 6 linhas para escrita
                     linhas_perfil = [[""] for _ in range(6)]
                     t_perfil = Table(linhas_perfil, colWidths=[800], rowHeights=[18]*6)
                     t_perfil.setStyle(TableStyle([
@@ -294,7 +286,6 @@ if mapoes_files:
                     bloco_final.append(Paragraph("<b>Assinaturas dos Professores:</b>", styles_text['Normal']))
                     bloco_final.append(Spacer(1, 10))
                     
-                    # Organiza assinaturas em grades (4 por linha)
                     assinaturas_data = []
                     chunk_size = 4
                     abbrev_disciplinas = [abreviar_disciplina(d) for d in disciplinas]
@@ -302,7 +293,7 @@ if mapoes_files:
                         chunk = abbrev_disciplinas[idx_chunk : idx_chunk+chunk_size]
                         linha_assinatura = [f"{d}: ______________________________" for d in chunk]
                         while len(linha_assinatura) < chunk_size:
-                            linha_assinatura.append("") # Preenche espaços vazios se sobrar
+                            linha_assinatura.append("") 
                         assinaturas_data.append(linha_assinatura)
                         
                     t_assinaturas = Table(assinaturas_data, colWidths=[200]*4, rowHeights=[30]*len(assinaturas_data))

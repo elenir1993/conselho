@@ -3,7 +3,8 @@ import pandas as pd
 import io
 import unicodedata
 from reportlab.lib.pagesizes import landscape, A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, PageBreak, Spacer, Paragraph, KeepTogether
+from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
 # 1. FUNÇÃO CHAVE: Limpa nomes para cruzamento exato
@@ -35,7 +36,7 @@ def abreviar_disciplina(nome):
     if 'PROJETO' in n and 'VIDA' in n: return 'P.VID'
     return n[:5]
 
-# 3. LEITOR DO NOVO MAPÃO DA SED
+# 3. LEITOR DO NOVO MAPÃO DA SED (Com Radar de Notas Vermelhas)
 def ler_novo_mapao(arquivo):
     df = pd.read_excel(arquivo, header=None)
     
@@ -60,6 +61,7 @@ def ler_novo_mapao(arquivo):
     row_2 = df.iloc[linha_cabecalho_2].fillna('').tolist()
     
     disciplinas = []
+    subject_m_cols = {} # Mapeia qual a coluna da "Média" (M) de cada disciplina
     idx_aluno, idx_sit, col_primeira_disciplina = -1, -1, -1
     
     for i, val in enumerate(row_1):
@@ -69,6 +71,7 @@ def ler_novo_mapao(arquivo):
         elif v and v.upper() != 'TOTAL':
             subj_name = v.split('\n')[0].strip()
             disciplinas.append(subj_name)
+            subject_m_cols[subj_name] = i + 1 # A coluna M sempre fica 1 casa à direita do cabeçalho da disciplina
             if col_primeira_disciplina == -1: col_primeira_disciplina = i
                 
     idx_tf, idx_fre, idx_ft_an, idx_fre_an = -1, -1, -1, -1
@@ -96,10 +99,24 @@ def ler_novo_mapao(arquivo):
         val_ft_an = str(row[idx_ft_an]).strip() if idx_ft_an != -1 else "-"
         val_fre_an = str(row[idx_fre_an]).strip() if idx_fre_an != -1 else "-"
         
-        alunos.append({
+        aluno_data = {
             'Nº': num, 'Nome do Aluno': nome, 'Sit.': sit,
             'TF': val_tf, 'Fre(%)': val_fre, 'FT An': val_ft_an, 'Fre An(%)': val_fre_an
-        })
+        }
+        
+        # RADAR DE NOTA VERMELHA: Checa a média de cada disciplina
+        for subj_name, m_col_idx in subject_m_cols.items():
+            m_val = str(row[m_col_idx]).strip().replace(',', '.')
+            is_red = False
+            try:
+                if float(m_val) < 5.0:
+                    is_red = True
+            except ValueError:
+                pass # Se for vazio ou caractere estranho, ignora
+                
+            aluno_data[subj_name] = "RED" if is_red else ""
+            
+        alunos.append(aluno_data)
         
     return pd.DataFrame(alunos), disciplinas, turma
 
@@ -134,7 +151,7 @@ if mapoes_files:
         pode_gerar = False
 
     if pode_gerar and st.button("Gerar Caderno do Conselho (PDF)", type="primary"):
-        with st.spinner('Desenhando páginas A4 e cruzando dados...'):
+        with st.spinner('Desenhando páginas A4, cruzando dados e aplicando radar de notas...'):
             try:
                 df_prova_reduzido = pd.DataFrame(columns=['Nome_Chave', 'Prova Paulista'])
                 
@@ -168,14 +185,13 @@ if mapoes_files:
 
                 # CONFIGURAÇÃO DO PDF
                 pdf_buffer = io.BytesIO()
-                # A4 Paisagem com margens de 20 pontos
                 doc = SimpleDocTemplate(pdf_buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
                 elementos_pdf = []
                 escola_nome = "E.E. Dr. Américo Brasiliense"
+                styles_text = getSampleStyleSheet()
 
                 for arq_mapao in mapoes_files:
                     df_mapao, disciplinas, nome_turma = ler_novo_mapao(arq_mapao)
-                    
                     if df_mapao is None or df_mapao.empty: continue
                         
                     df_mapao['Nome_Chave'] = df_mapao['Nome do Aluno'].apply(normalizar_nome)
@@ -189,11 +205,10 @@ if mapoes_files:
                     if 'Prova Paulista' in df_final.columns:
                         df_final['Prova Paulista'] = df_final['Prova Paulista'].fillna("-")
 
-                    # Montagem da Tabela para o PDF
+                    # Montagem da Tabela Principal
                     colunas_finais = ['Nº', 'Nome', 'Sit.', 'TF', 'Fre(%)', 'FT An', 'Fre An(%)', 'Prova'] + [abreviar_disciplina(d) for d in disciplinas] + ['Obs.']
                     
-                    # Cálculo matemático perfeito para preencher a largura do A4 (802 pontos)
-                    fixed_widths = [18, 140, 30, 20, 32, 28, 42, 28] # Total = 338
+                    fixed_widths = [18, 140, 30, 20, 32, 28, 42, 28] 
                     obs_width = 50
                     rem_width = 802 - sum(fixed_widths) - obs_width
                     disc_width = rem_width / max(len(disciplinas), 1)
@@ -205,63 +220,110 @@ if mapoes_files:
                     data_table.append([title] + [''] * (len(colunas_finais) - 1))
                     data_table.append(colunas_finais)
 
-                    df_final = df_final.fillna("-")
-                    for _, row in df_final.iterrows():
-                        # Corta o nome um pouco para não quebrar a tabela se o nome for gigante
-                        nome_trunc = str(row['Nome do Aluno'])[:38] 
-                        sit_trunc = str(row['Sit.'])[:5] # Ativo -> Ativo
-                        
-                        linha = [
-                            str(row['Nº']), nome_trunc, sit_trunc,
-                            str(row['TF']).replace("nan", "-"), str(row['Fre(%)']).replace("nan", "-"), 
-                            str(row['FT An']).replace("nan", "-"), str(row['Fre An(%)']).replace("nan", "-"),
-                            str(row['Prova Paulista'])
-                        ] + ["" for _ in disciplinas] + [""]
-                        data_table.append(linha)
-
-                    # Desenho e Estilo da Tabela
-                    t = Table(data_table, colWidths=widths, repeatRows=2)
-                    t.setStyle(TableStyle([
-                        # Cabeçalho Principal (Mesclado)
+                    # Estilos dinâmicos da tabela (aqui aplicamos as cores do radar)
+                    custom_styles = [
                         ('SPAN', (0,0), (-1,0)),
                         ('ALIGN', (0,0), (-1,0), 'CENTER'),
                         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
                         ('FONTSIZE', (0,0), (-1,0), 9),
                         ('BOTTOMPADDING', (0,0), (-1,0), 6),
-
-                        # Linha de Colunas
                         ('BACKGROUND', (0,1), (-1,1), colors.HexColor("#4F81BD")),
                         ('TEXTCOLOR', (0,1), (-1,1), colors.whitesmoke),
                         ('ALIGN', (0,1), (-1,1), 'CENTER'),
                         ('VALIGN', (0,1), (-1,1), 'MIDDLE'),
                         ('FONTNAME', (0,1), (-1,1), 'Helvetica-Bold'),
                         ('FONTSIZE', (0,1), (-1,1), 6.5),
-
-                        # Dados dos Alunos
                         ('FONTNAME', (0,2), (-1,-1), 'Helvetica'),
-                        ('FONTSIZE', (0,2), (-1,-1), 6.5), # Fonte pequena para caber
-                        ('ALIGN', (0,2), (0,-1), 'CENTER'), # Centraliza Nº
-                        ('ALIGN', (1,2), (1,-1), 'LEFT'),   # Esquerda no Nome
-                        ('ALIGN', (2,2), (-1,-1), 'CENTER'), # Centraliza o resto
+                        ('FONTSIZE', (0,2), (-1,-1), 6.5),
+                        ('ALIGN', (0,2), (0,-1), 'CENTER'), 
+                        ('ALIGN', (1,2), (1,-1), 'LEFT'),   
+                        ('ALIGN', (2,2), (-1,-1), 'CENTER'), 
                         ('VALIGN', (0,2), (-1,-1), 'MIDDLE'),
-
-                        # Bordas e Cores alternadas (Zebra) para facilitar leitura na régua
                         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
                         ('ROWBACKGROUNDS', (0,2), (-1,-1), [colors.white, colors.HexColor("#F2F2F2")])
-                    ]))
-                    
-                    elementos_pdf.append(t)
-                    elementos_pdf.append(PageBreak()) # Garante que a próxima turma comece em uma página NOVA
+                    ]
 
-                # Finaliza a montagem do documento PDF
+                    df_final = df_final.fillna("-")
+                    for row_idx, (_, row) in enumerate(df_final.iterrows()):
+                        nome_trunc = str(row['Nome do Aluno'])[:38] 
+                        sit_trunc = str(row['Sit.'])[:5] 
+                        
+                        linha = [
+                            str(row['Nº']), nome_trunc, sit_trunc,
+                            str(row['TF']).replace("nan", "-"), str(row['Fre(%)']).replace("nan", "-"), 
+                            str(row['FT An']).replace("nan", "-"), str(row['Fre An(%)']).replace("nan", "-"),
+                            str(row['Prova Paulista'])
+                        ]
+                        
+                        # Processando o Radar de Notas
+                        for subj_idx, subj in enumerate(disciplinas):
+                            val = row.get(subj, "")
+                            if val == "RED":
+                                linha.append("........") # Pontilhado para o professor marcar
+                                pdf_r = row_idx + 2
+                                pdf_c = 8 + subj_idx
+                                # Pinta o fundo de cinza claro e a letra de cinza médio
+                                custom_styles.append(('BACKGROUND', (pdf_c, pdf_r), (pdf_c, pdf_r), colors.HexColor("#EAEAEA")))
+                                custom_styles.append(('TEXTCOLOR', (pdf_c, pdf_r), (pdf_c, pdf_r), colors.HexColor("#A0A0A0")))
+                            else:
+                                linha.append("")
+                        
+                        linha.append("") # Coluna Obs
+                        data_table.append(linha)
+
+                    t = Table(data_table, colWidths=widths, repeatRows=2)
+                    t.setStyle(TableStyle(custom_styles))
+                    elementos_pdf.append(t)
+                    
+                    # --- BLOCO FINAL: PERFIL DA TURMA E ASSINATURAS ---
+                    # KeepTogether garante que o perfil e assinaturas não sejam divididos na quebra de página
+                    bloco_final = []
+                    bloco_final.append(Spacer(1, 20))
+                    bloco_final.append(Paragraph("<b>Perfil da Turma / Decisões do Conselho:</b>", styles_text['Normal']))
+                    bloco_final.append(Spacer(1, 8))
+                    
+                    # Tabela vazia gerando 6 linhas para escrita
+                    linhas_perfil = [[""] for _ in range(6)]
+                    t_perfil = Table(linhas_perfil, colWidths=[800], rowHeights=[18]*6)
+                    t_perfil.setStyle(TableStyle([
+                        ('LINEBELOW', (0,0), (-1,-1), 0.5, colors.gray)
+                    ]))
+                    bloco_final.append(t_perfil)
+                    
+                    bloco_final.append(Spacer(1, 25))
+                    bloco_final.append(Paragraph("<b>Assinaturas dos Professores:</b>", styles_text['Normal']))
+                    bloco_final.append(Spacer(1, 10))
+                    
+                    # Organiza assinaturas em grades (4 por linha)
+                    assinaturas_data = []
+                    chunk_size = 4
+                    abbrev_disciplinas = [abreviar_disciplina(d) for d in disciplinas]
+                    for idx_chunk in range(0, len(abbrev_disciplinas), chunk_size):
+                        chunk = abbrev_disciplinas[idx_chunk : idx_chunk+chunk_size]
+                        linha_assinatura = [f"{d}: ______________________________" for d in chunk]
+                        while len(linha_assinatura) < chunk_size:
+                            linha_assinatura.append("") # Preenche espaços vazios se sobrar
+                        assinaturas_data.append(linha_assinatura)
+                        
+                    t_assinaturas = Table(assinaturas_data, colWidths=[200]*4, rowHeights=[30]*len(assinaturas_data))
+                    t_assinaturas.setStyle(TableStyle([
+                        ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
+                        ('FONTSIZE', (0,0), (-1,-1), 8),
+                        ('VALIGN', (0,0), (-1,-1), 'BOTTOM'),
+                    ]))
+                    bloco_final.append(t_assinaturas)
+
+                    elementos_pdf.append(KeepTogether(bloco_final))
+                    elementos_pdf.append(PageBreak()) 
+
                 doc.build(elementos_pdf)
-                
                 pdf_buffer.seek(0)
-                st.success("Caderno do conselho gerado! Pronto para impressão em A4.")
+                
+                st.success("Ata do conselho gerada! Radar de notas e assinaturas aplicados com sucesso.")
                 st.download_button(
-                    label="⬇️ Baixar Caderno Oficial (PDF)",
+                    label="⬇️ Baixar Ata Oficial (PDF)",
                     data=pdf_buffer,
-                    file_name=f"Conselho_Classe_{turno}_Caderno.pdf",
+                    file_name=f"Conselho_Classe_{turno}_Ata_Oficial.pdf",
                     mime="application/pdf"
                 )
             except Exception as e:

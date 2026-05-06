@@ -150,7 +150,7 @@ if mapoes_files:
         pode_gerar = False
 
     if pode_gerar and st.button("Gerar Caderno do Conselho (PDF)", type="primary"):
-        with st.spinner('Desenhando páginas A4, cruzando dados e aplicando radar de notas...'):
+        with st.spinner('Aplicando inteligência de dados, radar de faltas e notas...'):
             try:
                 df_prova_reduzido = pd.DataFrame(columns=['Nome_Chave', 'Prova Paulista'])
                 
@@ -206,8 +206,9 @@ if mapoes_files:
 
                     colunas_finais = ['Nº', 'Nome', 'Sit.', 'TF', 'Fre(%)', 'FT An', 'Fre An(%)', 'Prova'] + [abreviar_disciplina(d) for d in disciplinas] + ['Obs.']
                     
+                    # Leve ajuste na largura da Obs para acomodar a nova frase
                     fixed_widths = [18, 140, 30, 20, 32, 28, 42, 28] 
-                    obs_width = 50
+                    obs_width = 54
                     rem_width = 802 - sum(fixed_widths) - obs_width
                     disc_width = rem_width / max(len(disciplinas), 1)
                     widths = fixed_widths + [disc_width]*len(disciplinas) + [obs_width]
@@ -218,7 +219,6 @@ if mapoes_files:
                     data_table.append([title] + [''] * (len(colunas_finais) - 1))
                     data_table.append(colunas_finais)
 
-                    # Estilos dinâmicos da tabela (Tudo em branco, exceto cabeçalho e radar)
                     custom_styles = [
                         ('SPAN', (0,0), (-1,0)),
                         ('ALIGN', (0,0), (-1,0), 'CENTER'),
@@ -245,16 +245,36 @@ if mapoes_files:
                         nome_trunc = str(row['Nome do Aluno'])[:38] 
                         sit_trunc = str(row['Sit.'])[:5] 
                         
+                        # Tratamento da Frequência para cor vermelha
+                        fre_str = str(row['Fre(%)']).replace("nan", "-")
+                        fre_num_str = fre_str.replace('%', '').strip()
+                        is_low_freq = False
+                        try:
+                            if float(fre_num_str) < 75.0:
+                                is_low_freq = True
+                        except ValueError:
+                            pass
+                            
                         linha = [
                             str(row['Nº']), nome_trunc, sit_trunc,
-                            str(row['TF']).replace("nan", "-"), str(row['Fre(%)']).replace("nan", "-"), 
+                            str(row['TF']).replace("nan", "-"), fre_str, 
                             str(row['FT An']).replace("nan", "-"), str(row['Fre An(%)']).replace("nan", "-"),
                             str(row['Prova Paulista'])
                         ]
                         
+                        # Pinta Frequência de vermelho claro se for menor que 75%
+                        if is_low_freq:
+                            pdf_r = row_idx + 2
+                            pdf_c_fre = 4 # Posição da coluna Fre(%)
+                            custom_styles.append(('BACKGROUND', (pdf_c_fre, pdf_r), (pdf_c_fre, pdf_r), colors.HexColor("#FFCCCC")))
+                            custom_styles.append(('TEXTCOLOR', (pdf_c_fre, pdf_r), (pdf_c_fre, pdf_r), colors.HexColor("#CC0000")))
+                        
+                        # Contagem do Radar de Notas e preenchimento dos quadradinhos
+                        red_count = 0
                         for subj_idx, subj in enumerate(disciplinas):
                             val = row.get(subj, "")
                             if val == "RED":
+                                red_count += 1
                                 linha.append("........") 
                                 pdf_r = row_idx + 2
                                 pdf_c = 8 + subj_idx
@@ -263,7 +283,12 @@ if mapoes_files:
                             else:
                                 linha.append("")
                         
-                        linha.append("") 
+                        # Lógica da Observação (> 60% com pontilhado vermelho)
+                        obs_text = ""
+                        if len(disciplinas) > 0 and (red_count / len(disciplinas)) > 0.6:
+                            obs_text = "Baixo desemp.\nbimestral"
+                            
+                        linha.append(obs_text) 
                         data_table.append(linha)
 
                     t = Table(data_table, colWidths=widths, repeatRows=2)
@@ -310,7 +335,7 @@ if mapoes_files:
                 doc.build(elementos_pdf)
                 pdf_buffer.seek(0)
                 
-                st.success("Ata do conselho gerada! Radar de notas e assinaturas aplicados com sucesso.")
+                st.success("Ata Oficial gerada! Análise de frequência e baixo desempenho já aplicadas nas observações.")
                 st.download_button(
                     label="⬇️ Baixar Ata Oficial (PDF)",
                     data=pdf_buffer,

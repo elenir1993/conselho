@@ -213,7 +213,7 @@ if mapoes_files:
                     disc_width = rem_width / max(len(disciplinas), 1)
                     widths = fixed_widths + [disc_width]*len(disciplinas) + [obs_width]
 
-                    title = f"{escola_nome}  |  {nome_turma} – {turno}  |  Conselho 1º Bimestre / 2026"
+                    title = f"{escola_nome}  |  {nome_turma} – {turno}  |  Conselho 2º Bimestre / 2026"
                     
                     data_table = []
                     data_table.append([title] + [''] * (len(colunas_finais) - 1))

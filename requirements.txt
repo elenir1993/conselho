@@ -1,5 +1,5 @@
 streamlit
 pandas
-lxml
-html5lib
 reportlab
+openpyxl
+xlrd
